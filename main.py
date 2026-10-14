@@ -1,4 +1,5 @@
 import pygame
+import numpy as np
 import random
 
 
@@ -79,6 +80,50 @@ def game_over(current_score, highscore):
     screen.blit(text_surface, score)
     screen.blit(highscore_surface, highest_score)
 
+
+def reset_game():
+    global score, player_gravity, player_x_offset
+    global enemy_list, game_active, player_index
+
+    player.midbottom = (80, 316)
+    player_gravity = 0
+    player_x_offset = 0
+    player_index = 0
+
+    player_hitbox.update(0, 0, 50, 50)
+    player_hitbox.midbottom = player.midbottom
+    player_hitbox.y -= 12
+
+    score = 0
+    enemy_list = []
+    game_active = True
+
+def get_game_state():
+    closest_distance = 1.0
+    closest_enemy = None
+    enemy_type = 0
+
+    for enemy in enemy_list:
+
+        current_distance = (enemy[1].left - player_hitbox.right) / 800
+
+        if enemy[1].right <= player_hitbox.left:
+            continue
+
+        if current_distance < closest_distance:
+            closest_distance = current_distance
+            closest_enemy = enemy
+
+            #check enemy type 0 = Mushroom, 1 = Infected
+            if enemy[0].bottom == 304:
+                enemy_type = 0
+            else:
+                enemy_type = 1
+
+    player_height = player_hitbox.top/400
+    vertical_velocity =player_gravity/20
+
+    return np.array([closest_distance,enemy_type,player_height,vertical_velocity])
 
 #animations
 
@@ -197,6 +242,10 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_e:
+                reset_game()
+
         if event.type == pygame.KEYDOWN and player.bottom >=316:
             #jump
             if event.key == pygame.K_w:
@@ -214,9 +263,7 @@ while running:
 
         if event.type == pygame.KEYDOWN and game_active == False:
             if event.key == pygame.K_SPACE:
-                game_active = True
-                score= 0
-                enemy_list = []
+                reset_game()
         if game_active:
             if event.type == enemy_timer :
                 enemy_x = random.randint(900, 1300)
@@ -267,6 +314,8 @@ while running:
         score = increase_score(enemy_list, score)
 
         show_score(score)
+        print(get_game_state())
+
 
     else:
         with open("highscore.txt", "r") as data:
