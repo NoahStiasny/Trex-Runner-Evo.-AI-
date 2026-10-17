@@ -1,7 +1,10 @@
 import pygame
 import numpy as np
 import random
-
+from player import Player
+from assets import Assets
+from obstacles import Obstacles
+from neural_network import NeuralNetwork
 
 pygame.init()
 screen = pygame.display.set_mode((800, 400))
@@ -12,49 +15,56 @@ running = True
 game_active = True
 dt = 0
 score = 0
+enemy_list=[]
+player_list = []
+generation = 1
+
+actions = {
+                0: "run",
+                1: "jump",
+                2: "duck"
+            }
 
 
-def spawn_enemies(enemies_list):
-    #tuples with 0 being the graphic and 1 the hitbox
+def check_collision(enemies_list, players_list):
     if enemies_list:
         for enemy in enemies_list:
-            enemy[0].left -= 5
-            enemy[1].midbottom = enemy[0].midbottom
-            if enemy[0].bottom == 304:
-                screen.blit(mushroom_surf, enemy[0])
-                # pygame.draw.rect(screen , "red", enemy[1], 2)
-
-            else:
-                screen.blit(infected_surf, enemy[0])
-                enemy[1].y -= 10
-                # pygame.draw.rect(screen, "red", enemy[1], 2)
-
-        return [enemy for enemy in enemies_list if enemy[0].right > -100]
-    else:
-        return[]
+            for player in players_list:
+                if player.hitbox.colliderect(enemy.hitbox)and player.alive == True:
+                    player.alive= False
 
 
-def check_collision(enemies_list):
-    if enemies_list:
-        for enemy in enemies_list:
-            if player_hitbox.colliderect(enemy[1]):
-                frozen_screen = screen.copy()
-                game_active = False
-                return game_active, frozen_screen
+
+def check_game_status(players_list):
+    if all(not player.alive for player in players_list):
+        frozen_screen = screen.copy()
+        return False, frozen_screen
+
     return True, None
 
-def increase_score(enemies_list, score):
-        for enemy in enemies_list:
-            if enemy[1].right <= player_hitbox.left and not enemy[2]:
-                score +=1
-                enemy[2]= True
-        return score
+def increase_score(enemies_list, players_list):
+    for enemy in enemies_list:
+        for player in players_list:
+            if not player.alive:
+                continue
+            if enemy.hitbox.right <= player.hitbox.left:
+                if enemy not in player.passed_obstacles:
+                    player.score += 1
+                    player.passed_obstacles.add(enemy)
 
 
-def show_score(current_score):
-    text_surface = font.render(f"Score: {current_score}", False, "Yellow")
-    score = text_surface.get_rect(midtop=(400, 50))
+def show_score(players_list, generation_count):
+    best_score = 0
+    for player in players_list:
+            if player.score > best_score:
+                best_score = player.score
+    text_surface = font.render(f"Score: {best_score}", False, "Yellow")
+    score = text_surface.get_rect(midtop=(300, 50))
     screen.blit(text_surface, score)
+
+    generation_surface = font.render(f"Generation: {generation_count}", False, "Yellow")
+    generation = generation_surface.get_rect(midtop=(500, 50))
+    screen.blit(generation_surface, generation)
 
 
 def game_over(current_score, highscore):
@@ -65,7 +75,7 @@ def game_over(current_score, highscore):
     score = text_surface.get_rect(center=(400, 140))
 
     highscore_surface = font.render(f"Your Highscore is: {highscore}", False, "Yellow")
-    highest_score = text_surface.get_rect(center=(400, 180))
+    highest_score = highscore_surface.get_rect(center=(400, 180))
 
     start_game_surface = font.render("Press space to restart", False, "Yellow")
     start_game= start_game_surface.get_rect(center=(400,220))
@@ -82,159 +92,90 @@ def game_over(current_score, highscore):
 
 
 def reset_game():
-    global score, player_gravity, player_x_offset
-    global enemy_list, game_active, player_index
+    global enemy_list, game_active, score, player_list, generation
 
-    player.midbottom = (80, 316)
-    player_gravity = 0
-    player_x_offset = 0
-    player_index = 0
-
-    player_hitbox.update(0, 0, 50, 50)
-    player_hitbox.midbottom = player.midbottom
-    player_hitbox.y -= 12
-
+    player_list = mutation()
     score = 0
     enemy_list = []
     game_active = True
+    generation +=1
 
-def get_game_state():
+def get_game_state(player, enemies_list):
     closest_distance = 1.0
     closest_enemy = None
     enemy_type = 0
 
-    for enemy in enemy_list:
+    for enemy in enemies_list:
+        current_distance = (enemy.hitbox.left - player.hitbox.right) / 800
 
-        current_distance = (enemy[1].left - player_hitbox.right) / 800
-
-        if enemy[1].right <= player_hitbox.left:
+        if enemy.hitbox.right <= player.hitbox.left:
             continue
 
         if current_distance < closest_distance:
             closest_distance = current_distance
             closest_enemy = enemy
 
-            #check enemy type 0 = Mushroom, 1 = Infected
-            if enemy[0].bottom == 304:
+            if enemy.enemy_type == "mushroom":
                 enemy_type = 0
             else:
                 enemy_type = 1
 
-    player_height = player_hitbox.top/400
-    vertical_velocity =player_gravity/20
+    player_height = player.hitbox.top/400
+    vertical_velocity =player.gravity/20
 
     return np.array([closest_distance,enemy_type,player_height,vertical_velocity])
 
-#animations
+def calculate_fitness(players_list):
+    for player in players_list:
+        fitness_score = player.survival_frames / 60 + 10 * player.score
+        player.fitness = fitness_score
+    fitness_ranking = sorted(players_list, key=lambda player: player.fitness, reverse=True)
+    return fitness_ranking
 
-def player_animated():
-    global player_index, player_surf
+def select_parents():
+    fitness_ranking = calculate_fitness(player_list)
+    top_five = fitness_ranking[:5]
+    return top_five
 
-    keys = pygame.key.get_pressed()
+def mutate_array(array, mutation_rate = 0.1, mutation_strength = 0.1):
+    mutation = np.random.normal(0, mutation_strength, array.shape)
+    mask = np.random.random(array.shape) < mutation_rate
 
-    if player.bottom < 300:
-        player_surf = player_jump_frame
-    elif keys[pygame.K_s]:
-        player_index += 0.2
-        if player_index >= len(player_duck_animation):
-            player_index = 0
+    mutated_array = array +(mask * mutation)
 
-        player_surf = player_duck_animation[int(player_index)]
-    else:
-        player_index += 0.2
-        if player_index >= len(player_animation):
-            player_index = 0
+    return mutated_array
 
-        player_surf = player_animation[int(player_index)]
+def mutation():
+    new_population = []
+    parents = select_parents()
+    for player in parents:
+        weights1 = player.network.weights1
+        weights2 = player.network.weights2
+        biases1 = player.network.biases1
+        biases2 = player.network.biases2
+
+        w_b_list = [weights1,weights2,biases1,biases2]
+
+        for i in range(9):
+            mutated_list = []
+            for entry in w_b_list:
+                mutated_list.append(mutate_array(entry))
+            new_population.append(Player(assets=assets, network=NeuralNetwork(weights_1= mutated_list[0],weights_2=mutated_list[1], biases_1=mutated_list[2], biases_2=mutated_list[3])))
+
+        new_population.append(Player(assets=assets, network=NeuralNetwork(weights_1=weights1,weights_2=weights2,biases_1=biases1,biases_2=biases2)))
+    return new_population
+
 
 test_surface = pygame.image.load("graphics/background.jpg").convert()
 background = pygame.transform.scale(test_surface, (800,400))
 
+assets = Assets()
 
-player_sprite_small = pygame.image.load("sprites/kuro/base/move.png").convert_alpha()
-player_sprite = pygame.transform.scale_by(player_sprite_small, 3)
-player_index = 0
-
-player_animation = [
-    player_sprite.subsurface(0,0,72,72),
-    player_sprite.subsurface(72,0,72,72),
-    player_sprite.subsurface(144,0,72,72),
-    player_sprite.subsurface(216,0,72,72),
-    player_sprite.subsurface(288,0,72,72),
-    player_sprite.subsurface(360,0,72,72),
-]
-
-player_jump_small = pygame.image.load("sprites/kuro/base/jump.png").convert_alpha()
-player_jump = pygame.transform.scale_by(player_jump_small, 3)
-
-player_jump_frame = player_jump.subsurface(144,0,72,72)
-
-player_duck_small = pygame.image.load("sprites/kuro/base/dash.png").convert_alpha()
-scale_factor = 3
-player_duck = pygame.transform.scale_by(player_duck_small, scale_factor)
-
-player_duck_animation = [
-    player_duck.subsurface(0*scale_factor,0,24*scale_factor,24*scale_factor),
-    player_duck.subsurface(24*scale_factor,0,24*scale_factor,24*scale_factor),
-    player_duck.subsurface(48*scale_factor,0,24*scale_factor,24*scale_factor),
-    player_duck.subsurface(72*scale_factor,0,24*scale_factor,24*scale_factor),
-    player_duck.subsurface(96*scale_factor,0,24*scale_factor,24*scale_factor),
-    player_duck.subsurface(120*scale_factor,0,24*scale_factor,24*scale_factor),
-]
-
-player_surf = player_animation[player_index]
-player = player_surf.get_rect(midbottom = (80,316))
-player_hitbox = pygame.Rect(0,0,50,50)
-
-player_gravity = 0
-player_x_offset = 0
+for i in range(50):
+    player_list.append(Player(assets=assets, network=NeuralNetwork()))
 
 enemy_timer = pygame.USEREVENT +1
 pygame.time.set_timer(enemy_timer,1200)
-
-mushroom_timer = pygame.USEREVENT +2
-pygame.time.set_timer(mushroom_timer, 200)
-
-infected_timer = pygame.USEREVENT +3
-pygame.time.set_timer(infected_timer, 200)
-
-enemy_list = []
-
-
-mushroom_surface_small = pygame.image.load("sprites/Forest_Monsters_FREE/Mushroom/Mushroom without VFX/Mushroom-Run.png").convert_alpha()
-mushroom_surface = pygame.transform.scale_by(mushroom_surface_small, 1.6)
-mushroom_index = 0
-
-mushroom_animation = [
-    mushroom_surface.subsurface(0,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(80*1.6,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(160*1.6,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(240*1.6,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(320*1.6,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(400*1.6,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(480*1.6,0,80*1.6,64*1.6),
-    mushroom_surface.subsurface(560*1.6,0,80*1.6,64*1.6),
-]
-
-mushroom_surf = mushroom_animation[mushroom_index]
-
-infected_surface_small = pygame.image.load("sprites/FlyingForestEnemies_FREE/Enemy3/Enemy3-Movement-In-Animation/Enemy3-Fly.png").convert_alpha()
-scaling_fac = 1.5
-infected_surface =pygame.transform.scale_by(infected_surface_small, scaling_fac)
-infected_index = 0
-
-infected_animation = [
-    infected_surface.subsurface(0,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(64*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(128*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(192*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(256*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(320*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(384*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-    infected_surface.subsurface(448*scaling_fac,0,64*scaling_fac,64*scaling_fac),
-]
-
-infected_surf = infected_animation[infected_index]
 
 
 while running:
@@ -246,89 +187,83 @@ while running:
             if event.key == pygame.K_e:
                 reset_game()
 
-        if event.type == pygame.KEYDOWN and player.bottom >=316:
+        #if event.type == pygame.KEYDOWN and player1.rect.bottom >=316:
             #jump
-            if event.key == pygame.K_w:
-                player_gravity = -19
+         #   if event.key == pygame.K_w:
+           #     player1.take_action("jump")
             #duck
-            if event.key == pygame.K_s:
-                player_hitbox.update(0,0,60,43)
-                player_x_offset = 10
+          #  if event.key == pygame.K_s:
+            #    player1.take_action("duck")
 
         #while s is pressed stay ducked
-        if event.type == pygame.KEYUP:
-            if event.key == pygame.K_s:
-                player_hitbox.update(0,0,50,50)
-                player_x_offset = 0
+        #if event.type == pygame.KEYUP:
+          #  if event.key == pygame.K_s:
+#                player1.take_action("run")
 
         if event.type == pygame.KEYDOWN and game_active == False:
             if event.key == pygame.K_SPACE:
                 reset_game()
+
         if game_active:
             if event.type == enemy_timer :
                 enemy_x = random.randint(900, 1300)
                 if random.randint(0,2):
-                    enemy_list.append([mushroom_surf.get_rect(midbottom=(enemy_x,304)),pygame.Rect(0,0,50,50), False])
+                    enemy_list.append(Obstacles(assets=assets,enemy_type="mushroom", x_position=enemy_x))
                 else:
-                    enemy_list.append([infected_surf.get_rect(midbottom = (enemy_x,270)),pygame.Rect(0,0,60,80), False])
-
-            if event.type == mushroom_timer:
-                mushroom_index += 1
-                if mushroom_index >= len(mushroom_animation):
-                    mushroom_index = 0
-
-                mushroom_surf = mushroom_animation[int(mushroom_index)]
-
-            if event.type == infected_timer:
-                infected_index += 1
-                if infected_index >= len(infected_animation):
-                    infected_index = 0
-
-                infected_surf = infected_animation[int(infected_index)]
+                    enemy_list.append(Obstacles(assets=assets, enemy_type="infected", x_position=enemy_x))
 
     if game_active:
         screen.blit(background,(0,0))
 
-        #implement exponetnial gravity for falling
-        player_gravity += 1
-        player.bottom += player_gravity
 
+        for player in player_list:
+            state = get_game_state(player, enemy_list)
+            if not player.alive:
+                continue
+            prediction = player.network.predict(state)
 
-        if player.bottom >= 316:
-            player.bottom = 316
-            player_gravity = 0
-        player_animated()
-        screen.blit(player_surf, player)
-        # offset the player hitbox to match the actual ground height
-        player_hitbox.midbottom = player.midbottom
+            player.take_action(actions[prediction])
 
-        player_hitbox.y += -12
-        player_hitbox.x += player_x_offset
+            player.update_player()
+            player.animation()
+            player.show(screen)
+            player.survival_frames += 1
 
-        enemy_list = spawn_enemies(enemy_list)
+        if enemy_list:
+            for enemy in enemy_list:
+                enemy.update()
+                enemy.animation()
+                enemy.show(screen)
 
-        game_active, frozen_screen = check_collision(enemy_list)
+            enemy_list = [
+                    enemy for enemy in enemy_list
+                    if enemy.rect.right >= 0
+                ]
 
-        # pygame.draw.rect(screen, "red", player_hitbox, 2)
+        check_collision(enemy_list, player_list)
 
-        score = increase_score(enemy_list, score)
+        increase_score(enemy_list, player_list)
 
-        show_score(score)
-        print(get_game_state())
+        show_score(player_list, generation)
 
+        game_active, frozen_screen = check_game_status(player_list)
+
+        best_score = max(player.score for player in player_list)
+
+        if not game_active:
+            reset_game()
 
     else:
         with open("highscore.txt", "r") as data:
             highscore = int(data.readline())
 
         with open("highscore.txt", "w") as data:
-            if score > highscore:
-                data.write(str(score))
+            if best_score > highscore:
+                data.write(str(best_score))
             else:
                 data.write(str(highscore))
 
-        game_over(score, highscore)
-
+        game_over(best_score, highscore)
 
     pygame.display.flip()
     dt = clock.tick(60)
